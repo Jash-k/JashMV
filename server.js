@@ -106,10 +106,11 @@ const getMoviesFromSources = async (sources) => {
 
                 // Stream Info
                 const quality = getQuality(rawTitle);
+                const sourceName = source.name || 'M3U Source';
                 const streamEntry = {
-                    title: `${quality} - ${source.name || 'Source'} \n${item.group.title || ''}`,
+                    title: `${quality} - ${sourceName} \n${item.group.title || ''}`,
                     url: item.url,
-                    name: source.name || 'M3U',
+                    name: sourceName,
                     behaviorHints: {
                         notWebReady: true // Hints that this might not play in browser
                     }
@@ -117,7 +118,11 @@ const getMoviesFromSources = async (sources) => {
 
                 if (movieMap.has(key)) {
                     // Add stream to existing movie
-                    movieMap.get(key).streams.push(streamEntry);
+                    const existing = movieMap.get(key);
+                    existing.streams.push(streamEntry);
+                    if (!existing.sourceNames.includes(sourceName)) {
+                        existing.sourceNames.push(sourceName);
+                    }
                 } else {
                     // Create new movie entry
                     // We use a deterministic ID based on the key to ensure it stays same across reloads
@@ -133,7 +138,8 @@ const getMoviesFromSources = async (sources) => {
                         year: year,
                         genres: item.group.title ? [item.group.title] : [],
                         streams: [streamEntry],
-                        description: `Available in ${quality}`
+                        description: `Available in ${quality}`,
+                        sourceNames: [sourceName]
                     });
                 }
             });
@@ -200,25 +206,40 @@ app.get('/:config/manifest.json', (req, res) => {
     const config = decodeConfig(req.params.config);
     if (!config) return res.status(400).send("Invalid Config");
 
+    // Dynamic Catalogs based on Sources
+    const catalogs = config.sources.map((source, index) => ({
+        type: 'movie',
+        id: `m3u_cat_${index}`, // Unique ID for each catalog
+        name: source.name || `Source ${index + 1}`,
+        extra: [
+            { name: 'search', isRequired: false },
+            { name: 'genre', isRequired: false },
+            { name: 'skip', isRequired: false }
+        ]
+    }));
+
+    // Add an "All Movies" catalog at the top if there are multiple sources
+    if (config.sources.length > 1) {
+        catalogs.unshift({
+            type: 'movie',
+            id: 'm3u_all',
+            name: 'All M3U Movies',
+            extra: [
+                { name: 'search', isRequired: false },
+                { name: 'genre', isRequired: false },
+                { name: 'skip', isRequired: false }
+            ]
+        });
+    }
+
     const manifest = {
         id: 'community.m3uaddon.multi',
-        version: '1.1.0',
+        version: '1.2.0',
         name: 'M3U Multi-Source',
         description: 'Stream movies from multiple M3U playlists with Auto-Refresh and TMDB.',
         resources: ['catalog', 'stream', 'meta'],
         types: ['movie'],
-        catalogs: [
-            {
-                type: 'movie',
-                id: 'm3u_movies',
-                name: 'M3U Movies',
-                extra: [
-                    { name: 'search', isRequired: false },
-                    { name: 'genre', isRequired: false },
-                    { name: 'skip', isRequired: false }
-                ]
-            }
-        ],
+        catalogs: catalogs,
         idPrefixes: ['m3u_']
     };
     
@@ -227,7 +248,7 @@ app.get('/:config/manifest.json', (req, res) => {
 });
 
 const handleCatalog = async (req, res) => {
-    const { config: configStr, type, extra } = req.params;
+    const { config: configStr, type, id, extra } = req.params;
     
     // Although we only support 'movie', Stremio might ask for other types if we listed them.
     if (type !== 'movie') return res.json({ metas: [] });
@@ -236,6 +257,16 @@ const handleCatalog = async (req, res) => {
     if (!config || !config.sources) return res.json({ metas: [] });
 
     let movies = await getMoviesFromSources(config.sources);
+
+    // Filter by Catalog ID (Source)
+    if (id !== 'm3u_all') {
+        const sourceIndex = parseInt(id.replace('m3u_cat_', ''));
+        if (!isNaN(sourceIndex) && config.sources[sourceIndex]) {
+            const targetName = config.sources[sourceIndex].name || 'M3U Source';
+            // Filter movies that contain streams from this source
+            movies = movies.filter(m => m.sourceNames && m.sourceNames.includes(targetName));
+        }
+    }
 
     // Parse Extra
     let search = null;

@@ -101,7 +101,8 @@ export function App() {
                             type="text"
                             value={source.name}
                             onChange={(e) => updateSource(index, 'name', e.target.value)}
-                            placeholder="Source Name (e.g. Movies 4K)"
+                            placeholder="Catalog Name (e.g. New Movies)"
+                            title="This name will appear as a separate catalog in Stremio"
                             className="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-md text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
                           />
                         </div>
