@@ -21,9 +21,9 @@ export function App() {
   };
 
   const updateSource = (index: number, field: keyof Source, value: string) => {
-    const newSources = [...sources];
-    newSources[index][field] = value;
-    setSources(newSources);
+    setSources(prev => prev.map((s, i) => 
+      i === index ? { ...s, [field]: value } : s
+    ));
   };
 
   const generateLink = () => {

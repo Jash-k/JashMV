@@ -68,6 +68,8 @@ const getQuality = (title) => {
 
 // Fetch and Merge Logic
 const getMoviesFromSources = async (sources) => {
+    if (!sources || !Array.isArray(sources)) return [];
+    
     const cacheKey = JSON.stringify(sources);
     const now = Date.now();
 
@@ -84,6 +86,7 @@ const getMoviesFromSources = async (sources) => {
 
     const fetchPromises = sources.map(async (source) => {
         try {
+            if (!source.url) return;
             const response = await axios.get(source.url);
             const playlist = parse(response.data);
             
@@ -98,6 +101,8 @@ const getMoviesFromSources = async (sources) => {
                 // Unique Key for Grouping
                 // If we have a year, use it to distinguish remakes.
                 const key = year ? `${normalizeTitle(title)}|${year}` : normalizeTitle(title);
+
+                if (!key) return;
 
                 // Stream Info
                 const quality = getQuality(rawTitle);
@@ -162,9 +167,6 @@ const fetchTMDBMetadata = async (movie, apiKey) => {
         if (searchRes.data.results && searchRes.data.results.length > 0) {
             const tmdbItem = searchRes.data.results[0];
             
-            // Get full details (for genres, runtime, etc if needed, but search result has most)
-            // We'll stick to search result for speed unless we need more
-            
             const meta = {
                 ...movie,
                 name: tmdbItem.title,
@@ -173,7 +175,7 @@ const fetchTMDBMetadata = async (movie, apiKey) => {
                 description: tmdbItem.overview || movie.description,
                 year: tmdbItem.release_date ? tmdbItem.release_date.split('-')[0] : movie.year,
                 releaseInfo: tmdbItem.release_date ? tmdbItem.release_date.split('-')[0] : movie.year,
-                imdbRating: tmdbItem.vote_average.toFixed(1),
+                imdbRating: tmdbItem.vote_average ? tmdbItem.vote_average.toFixed(1) : undefined,
                 genres: tmdbItem.genre_ids ? [] : movie.genres // We'd need genre map for IDs, skip for now or fetch full details
             };
             
@@ -213,7 +215,7 @@ app.get('/:config/manifest.json', (req, res) => {
                 extra: [
                     { name: 'search', isRequired: false },
                     { name: 'genre', isRequired: false },
-                    { name: 'skip', isRequired: false } // For pagination if we wanted
+                    { name: 'skip', isRequired: false }
                 ]
             }
         ],
@@ -227,6 +229,7 @@ app.get('/:config/manifest.json', (req, res) => {
 const handleCatalog = async (req, res) => {
     const { config: configStr, type, extra } = req.params;
     
+    // Although we only support 'movie', Stremio might ask for other types if we listed them.
     if (type !== 'movie') return res.json({ metas: [] });
 
     const config = decodeConfig(configStr);
@@ -237,6 +240,7 @@ const handleCatalog = async (req, res) => {
     // Parse Extra
     let search = null;
     let genre = null;
+    let skip = 0;
     
     if (extra) {
         // Stremio passes extra as "key=value&key2=value2"
@@ -245,6 +249,7 @@ const handleCatalog = async (req, res) => {
             const [key, val] = p.split('=');
             if (key === 'search') search = decodeURIComponent(val);
             if (key === 'genre') genre = decodeURIComponent(val);
+            if (key === 'skip') skip = parseInt(val) || 0;
         });
     }
 
@@ -257,15 +262,19 @@ const handleCatalog = async (req, res) => {
         results = results.filter(m => m.genres && m.genres.includes(genre));
     }
     
-    // Sort by year desc
-    results.sort((a, b) => (b.year || 0) - (a.year || 0));
+    // Sort by year desc (default for catalog)
+    results.sort((a, b) => {
+         const yearA = parseInt(a.year) || 0;
+         const yearB = parseInt(b.year) || 0;
+         return yearB - yearA;
+    });
 
-    // Pagination Limit
-    if (!search && results.length > 100) {
-        results = results.slice(0, 100);
-    }
+    // Pagination
+    // Stremio default is ~100 items per page
+    const PAGE_SIZE = 100;
+    const paginatedResults = results.slice(skip, skip + PAGE_SIZE);
 
-    const metas = results.map(m => ({
+    const metas = paginatedResults.map(m => ({
         id: m.id,
         type: 'movie',
         name: m.name,
@@ -277,10 +286,12 @@ const handleCatalog = async (req, res) => {
     res.json({ metas });
 };
 
+// Route without extra
 app.get('/:config/catalog/:type/:id.json', async (req, res) => {
     await handleCatalog(req, res);
 });
 
+// Route with extra
 app.get('/:config/catalog/:type/:id/:extra.json', async (req, res) => {
     await handleCatalog(req, res);
 });
@@ -318,8 +329,10 @@ app.get('/:config/stream/:type/:id.json', async (req, res) => {
     res.json({ streams: movie.streams });
 });
 
-// Fallback
-app.get('*', (req, res) => {
+// Catch-all route for serving the frontend
+// Using regex to avoid 'path-to-regexp' issues in Express 5
+app.get(/.*/, (req, res) => {
+    // If it's an API request that didn't match above, return 404
     if (req.headers.accept && req.headers.accept.includes('application/json')) {
         return res.status(404).json({ error: 'Not found' });
     }
